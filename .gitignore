@@ -13,18 +13,17 @@ build/
 venv/
 env/
 .venv/
-
 # Output files
 *.csv
 *.txt.bak
 results/
-
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-
 # OS
 .DS_Store
 Thumbs.db
+myfile.txt
+whois_result.json
