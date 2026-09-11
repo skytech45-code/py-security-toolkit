@@ -1,0 +1,7 @@
+{
+  "target": "192.168.0.1",
+  "scan_range": "1-1024",
+  "open_ports": [],
+  "total_open": 0,
+  "timestamp": "2026-09-11T01:39:57.694730"
+}
