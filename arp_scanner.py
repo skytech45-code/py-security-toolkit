@@ -1,68 +1,139 @@
-import sys
 import argparse
-from scapy.all import ARP, Ether, srp
+import socket
+import ipaddress
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from colorama import Fore, Style, init
 from utils import print_status
 
 init(autoreset=True)
 
-# ─────────────────────────────────────────────────────────────────
-# py-security-toolkit | arp_scanner.py
-# Author : skytech45
-# Desc   : Scan the local network for active devices using ARP.
-# ─────────────────────────────────────────────────────────────────
 
-def scan_arp(target_ip: str, timeout: int = 2):
+def check_host(ip: str, timeout: float = 0.5):
     """
-    Send ARP requests to a target IP range and return active devices.
+    Check whether a host responds on common TCP ports.
+    Local/authorized network discovery only.
     """
-    print_status(f"Starting ARP scan on: {target_ip}", "cyan")
-    
-    # Create ARP request packet
-    # pdst is the target IP range
-    arp = ARP(pdst=target_ip)
-    
-    # Create Ether broadcast packet
-    # ff:ff:ff:ff:ff:ff is the broadcast MAC address
-    ether = Ether(dst="ff:ff:ff:ff:ff:ff")
-    
-    # Stack layers
-    packet = ether/arp
-    
+    common_ports = [22, 53, 80, 443, 8080]
+
+    for port in common_ports:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(timeout)
+                if sock.connect_ex((str(ip), port)) == 0:
+                    return {
+                        "ip": str(ip),
+                        "port": port
+                    }
+        except (socket.timeout, OSError):
+            continue
+
+    return None
+
+
+def scan_network(target: str, timeout: float = 0.5, threads: int = 32):
+    """
+    Perform a lightweight TCP-based discovery scan.
+    This avoids Scapy's unsupported Android packet I/O.
+    """
     try:
-        # Send and receive packets
-        # srp: send and receive packets at layer 2
-        result = srp(packet, timeout=timeout, verbose=False)[0]
-        
-        devices = []
-        for sent, received in result:
-            devices.append({'ip': received.psrc, 'mac': received.hwsrc})
-            
-        return devices
-    except PermissionError:
-        print_status("Permission denied. ARP scanning requires root/sudo privileges.", "error")
-        return None
-    except Exception as e:
-        print_status(f"An error occurred: {e}", "error")
-        return None
+        network = ipaddress.ip_network(target, strict=False)
+    except ValueError as exc:
+        print_status(f"Invalid network range: {exc}", "error")
+        return []
+
+    hosts = list(network.hosts())
+
+    if not hosts:
+        print_status("No usable host addresses found.", "error")
+        return []
+
+    print_status(
+        f"Starting Android-compatible discovery on: {network}",
+        "cyan"
+    )
+    print_status(
+        f"Testing {len(hosts)} host(s) on common TCP ports...",
+        "cyan"
+    )
+
+    devices = []
+
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        futures = {
+            executor.submit(check_host, ip, timeout): ip
+            for ip in hosts
+        }
+
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                devices.append(result)
+
+    return sorted(devices, key=lambda item: ipaddress.ip_address(item["ip"]))
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Scan the local network for active devices using ARP.")
-    parser.add_argument("-t", "--target", required=True, help="Target IP range (e.g., 192.168.1.0/24)")
-    parser.add_argument("--timeout", type=int, default=2, help="Timeout for ARP requests (default: 2)")
-    
+    parser = argparse.ArgumentParser(
+        description=(
+            "Local network discovery tool for Termux/Android. "
+            "Use only on networks you own or are authorized to test."
+        )
+    )
+
+    parser.add_argument(
+        "-t",
+        "--target",
+        required=True,
+        help="Target local network (example: 192.168.1.0/24)"
+    )
+
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=0.5,
+        help="TCP connection timeout in seconds (default: 0.5)"
+    )
+
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=32,
+        help="Maximum concurrent checks (default: 32)"
+    )
+
     args = parser.parse_args()
-    
-    devices = scan_arp(args.target, args.timeout)
-    
-    if devices is not None:
-        print("-" * 40)
-        print(f"{'IP Address':<20} {'MAC Address':<20}")
-        print("-" * 40)
-        for device in devices:
-            print(f"{Fore.GREEN}{device['ip']:<20}{Style.RESET_ALL} {device['mac']:<20}")
-        print("-" * 40)
-        print_status(f"Scan complete. Found {len(devices)} active device(s).", "cyan")
+
+    if args.timeout <= 0:
+        parser.error("--timeout must be greater than 0")
+
+    if not 1 <= args.threads <= 128:
+        parser.error("--threads must be between 1 and 128")
+
+    devices = scan_network(
+        args.target,
+        args.timeout,
+        args.threads
+    )
+
+    print("-" * 55)
+    print(f"{'IP Address':<20} {'Detected TCP Port':<20}")
+    print("-" * 55)
+
+    for device in devices:
+        print(
+            f"{Fore.GREEN}{device['ip']:<20}"
+            f"{Style.RESET_ALL}"
+            f"{device['port']:<20}"
+        )
+
+    print("-" * 55)
+
+    print_status(
+        f"Discovery complete. Found {len(devices)} responsive host(s).",
+        "cyan"
+    )
+
 
 if __name__ == "__main__":
     main()
